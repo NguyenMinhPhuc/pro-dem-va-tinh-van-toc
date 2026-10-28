@@ -16,13 +16,16 @@ from pathlib import Path
 
 def make_zip(app_dir: Path, zip_path: Path) -> None:
     root_name = app_dir.name
+    outputs_dir = app_dir / "outputs"
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6, allowZip64=True) as zf:
         for path in sorted(app_dir.rglob("*")):
             arcname = Path(root_name) / path.relative_to(app_dir)
+            # outputs/ ships as empty folders: never package data from a local test run (DB, logs, captures)
+            in_outputs = outputs_dir in path.parents
             if path.is_dir():
-                if not any(path.iterdir()):
+                if in_outputs or not any(path.iterdir()):
                     zf.writestr(str(arcname).replace(os.sep, "/") + "/", "")
-            else:
+            elif not in_outputs:
                 zf.write(path, arcname)
 
 
