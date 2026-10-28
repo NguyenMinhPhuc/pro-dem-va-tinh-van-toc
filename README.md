@@ -131,16 +131,28 @@ AutoGuardian/
 │   ├── test_gui.py          # Kiểm thử các widget và giao diện PyQt5
 │   ├── test_storage_and_utils.py # Kiểm thử SQLite, exporter, geometry, drawing
 │   └── test_streaming.py    # Kiểm thử bộ đọc video và hàng đợi frame dropping
+├── launcher/
+│   └── autoguardian_launcher.py # Bộ cài nhẹ: phát hiện GPU, tải gói CPU/GPU từ GitHub Release
+├── tools/
+│   ├── package_release.py   # Nén + chia phần < 2 GB cho GitHub Release
+│   └── make_manifest.py     # Tạo manifest.json (URL, kích thước, SHA-256 các gói) cho launcher
+├── docs/images/             # Ảnh minh họa cho hướng dẫn sử dụng
 ├── app.py                   # Điểm khởi chạy chính của ứng dụng
 ├── build_exe.ps1            # Script đóng gói thành AutoGuardian.exe (PyInstaller)
+├── build_launcher.ps1       # Script build AutoGuardian-Setup.exe + manifest.json
 ├── requirements.txt         # Danh sách thư viện phụ thuộc
 ├── requirements-nodeps.txt  # Thư viện biển số (cài với --no-deps)
+├── HUONG_DAN_SU_DUNG.md     # Hướng dẫn sử dụng cho người dùng cuối
 └── README.md                # Tài liệu hướng dẫn
 ```
 
 ---
 
 ## 🚀 IV. HƯỚNG DẪN CÀI ĐẶT & KHỞI CHẠY
+
+> **Người dùng cuối (không cần Python):** tải `AutoGuardian-Setup.exe` tại trang
+> [Releases](https://github.com/NguyenMinhPhuc/pro-dem-va-tinh-van-toc/releases/latest) – bộ cài tự chọn bản GPU/CPU
+> phù hợp. Xem chi tiết trong **[HƯỚNG DẪN SỬ DỤNG](HUONG_DAN_SU_DUNG.md)**. Các mục dưới đây dành cho nhà phát triển.
 
 ### 1. Yêu cầu Hệ thống
 * Hệ điều hành: Windows 10/11, Linux, hoặc macOS
@@ -184,6 +196,19 @@ powershell -ExecutionPolicy Bypass -File build_exe.ps1 -Cuda
 Kết quả nằm ở `dist\cpu\AutoGuardian\` hoặc `dist\cuda\AutoGuardian\`, kèm file nén trong `dist\` (tự chia thành
 `.zip.001`, `.zip.002`... nếu lớn hơn 1.9 GB - giải nén bằng 7-Zip, mở file `.001`). Copy nguyên thư mục sang máy khác,
 chạy `AutoGuardian.exe` - không cần cài Python. Cấu hình ở `configs\`, kết quả ở `outputs\`, log lỗi ở `outputs\logs\autoguardian.log`.
+
+### 5. Phát hành qua bộ cài (Launcher)
+Người dùng chỉ tải `AutoGuardian-Setup.exe` (~10 MB). Khi chạy, bộ cài đọc
+`https://github.com/<repo>/releases/latest/download/manifest.json`, phát hiện GPU NVIDIA (`nvidia-smi`), tải gói
+CPU hoặc GPU (tải tiếp khi đứt mạng, kiểm tra SHA-256), giải nén vào `%LOCALAPPDATA%\AutoGuardian`, tạo shortcut và
+những lần sau tự kiểm tra bản cập nhật (giữ nguyên `configs\` và `outputs\` của người dùng).
+```powershell
+# 1. Build hai gói ứng dụng (mục 4), upload các file trong dist\ lên release chứa gói, ví dụ v1.1.0
+# 2. Build bộ cài + manifest trỏ tới release chứa gói
+powershell -ExecutionPolicy Bypass -File build_launcher.ps1 -AppVersion 1.1.0 -PackageTag v1.1.0
+# 3. Tạo release mới nhất (Latest) gồm dist\AutoGuardian-Setup.exe và dist\manifest.json
+```
+Tham số bộ cài: `--variant cpu|cuda` (bỏ qua màn hình chọn), `--reinstall`, `--no-launch`, `--no-shortcuts`.
 
 ---
 
