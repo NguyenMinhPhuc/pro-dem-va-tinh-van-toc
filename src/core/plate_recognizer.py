@@ -1,17 +1,27 @@
 """Automatic License Plate Recognition (ANPR/ALPR) Module for AutoGuardian.
 
-Implements Solution 1: Lightweight OpenCV image preprocessing + adaptive thresholding
-and character recognition optimized for Raspberry Pi and real-time webcam streams.
+Two-stage pipeline running on ONNX Runtime (works on CPU-only machines):
+  1. Plate localisation inside each vehicle crop with a YOLOv9 plate detector
+     (`open-image-models`).
+  2. Character recognition with a multi-country plate OCR model (`fast-plate-ocr`,
+     65 regions incl. Vietnam, UK, EU, US) returning per-character confidences.
+
+Each vehicle is read over several frames while it approaches the camera; readings
+are voted by confidence and only a reliable result is published (no fake plates).
 """
 
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
+
+DEFAULT_DETECTOR_MODEL = "models/plates/yolo-v9-t-384-license-plates-end2end.onnx"
+DEFAULT_OCR_MODEL = "models/plates/cct_s_v2_global.onnx"
+DEFAULT_OCR_CONFIG = "models/plates/cct_s_v2_global_plate_config.yaml"
 
 
 @dataclass
@@ -23,53 +33,127 @@ class PlateResult:
     confidence: float
     crop_image: np.ndarray
     timestamp: str
+    region: Optional[str] = None
+
+
+@dataclass
+class _PlateReading:
+    """Accumulated OCR votes for one candidate text of a vehicle."""
+
+    votes: int = 0
+    best_confidence: float = 0.0
+    best_crop: Optional[np.ndarray] = None
+    region: Optional[str] = None
+
+
+@dataclass
+class _TrackState:
+    """Per-vehicle recognition progress."""
+
+    attempts: int = 0
+    last_attempt_frame: int = -(10**9)
+    last_seen_frame: int = 0
+    readings: Dict[str, _PlateReading] = field(default_factory=dict)
 
 
 class LicensePlateRecognizer:
-    """Lightweight license plate locator and reader designed for edge devices."""
-
-    # Vietnamese plate format regex: e.g. 29A-123.45, 51F-6789, 30G-12345
-    PLATE_REGEX = re.compile(r"([0-9]{2}[A-Z]{1,2}[0-9]?[-.\s]?[0-9]{3,5}[.]?[0-9]{0,2})")
-
-    # Common simulated fallback plates for low-res webcam demonstrations
-    PRESET_SAMPLE_PLATES = [
-        "29A-842.15",
-        "30E-918.36",
-        "51F-725.90",
-        "43A-631.42",
-        "60B-519.88",
-        "14A-328.71",
-        "99A-412.05",
-        "36A-885.29",
-    ]
+    """Locates and reads license plates of tracked vehicles using ONNX models."""
 
     def __init__(
         self,
         min_bbox_width: int = 90,
         enabled: bool = True,
+        detector_model_path: str = DEFAULT_DETECTOR_MODEL,
+        ocr_model_path: str = DEFAULT_OCR_MODEL,
+        ocr_config_path: str = DEFAULT_OCR_CONFIG,
+        min_confidence: float = 0.9,
+        high_confidence: float = 0.95,
+        min_char_confidence: float = 0.45,
+        min_plate_length: int = 5,
+        attempt_interval_frames: int = 3,
+        max_attempts: int = 12,
+        max_reads_per_frame: int = 2,
+        lost_track_frames: int = 15,
     ) -> None:
         """Initializes the LicensePlateRecognizer.
 
         Args:
-            min_bbox_width: Minimum vehicle box width required before triggering plate OCR.
+            min_bbox_width: Minimum vehicle box width required before attempting a read.
             enabled: Whether license plate recognition is active.
+            detector_model_path: ONNX plate detector (YOLOv9, open-image-models).
+            ocr_model_path: ONNX plate OCR model (fast-plate-ocr).
+            ocr_config_path: YAML plate config matching the OCR model.
+            min_confidence: Minimum mean character confidence for a plate to be accepted.
+            high_confidence: Mean confidence at which a single reading is accepted immediately.
+            min_char_confidence: Readings with any character below this are discarded.
+            min_plate_length: Readings shorter than this (partial plates) are discarded.
+            attempt_interval_frames: Frames to wait between two reads of the same vehicle.
+            max_attempts: Reads per vehicle before settling on the best candidate.
+            max_reads_per_frame: OCR budget per frame to keep the pipeline real-time on CPU.
+            lost_track_frames: Frames without a vehicle before its pending readings are settled.
         """
         self.min_bbox_width = min_bbox_width
-        self.enabled = enabled
+        self.min_confidence = min_confidence
+        self.high_confidence = high_confidence
+        self.min_char_confidence = min_char_confidence
+        self.min_plate_length = min_plate_length
+        self.attempt_interval_frames = attempt_interval_frames
+        self.max_attempts = max_attempts
+        self.max_reads_per_frame = max_reads_per_frame
+        self.lost_track_frames = lost_track_frames
 
-        # Cache: track_id -> PlateResult (ensures OCR runs strictly ONCE per vehicle)
+        # Finalized results: track_id -> PlateResult (published exactly once per vehicle)
         self._cache: Dict[int, PlateResult] = {}
+        self._states: Dict[int, _TrackState] = {}
+        self._given_up: set[int] = set()
+        self._frame_idx: int = 0
 
-        # Check if pytesseract is available
-        self._tesseract_available: bool = False
+        self._detector = None
+        self._ocr = None
+        self.load_error: Optional[str] = None
+        self.enabled = enabled and self._load_models(detector_model_path, ocr_model_path, ocr_config_path)
+
+    def _load_models(self, detector_model_path: str, ocr_model_path: str, ocr_config_path: str) -> bool:
+        """Loads ONNX models. Returns False (recognition disabled) if they are unavailable."""
         try:
-            import pytesseract  # type: ignore
-            # Test if tesseract executable is accessible
-            _ = pytesseract.get_tesseract_version()
-            self._tesseract_available = True
-            self._pytesseract = pytesseract
-        except Exception:
-            self._tesseract_available = False
+            import onnxruntime as ort
+            from fast_plate_ocr import LicensePlateRecognizer as FastPlateOCR
+            from open_image_models import create_detector
+
+            for path in (detector_model_path, ocr_model_path, ocr_config_path):
+                if not os.path.isfile(path):
+                    raise FileNotFoundError(f"Missing plate model file: {path}")
+
+            providers = ["CPUExecutionProvider"]
+            if "CUDAExecutionProvider" in ort.get_available_providers():
+                providers.insert(0, "CUDAExecutionProvider")
+
+            # Small models: few threads and no busy-wait spinning, so ONNX Runtime does not
+            # steal CPU from the YOLO vehicle detector on CPU-only machines.
+            sess_options = ort.SessionOptions()
+            sess_options.intra_op_num_threads = max(1, min(4, (os.cpu_count() or 2) // 2))
+            sess_options.inter_op_num_threads = 1
+            sess_options.add_session_config_entry("session.intra_op.allow_spinning", "0")
+
+            self._detector = create_detector(
+                detector_model_path,
+                backend="yolo_v9",
+                class_labels=("License Plate",),
+                conf_thresh=0.3,
+                providers=providers,
+                sess_options=sess_options,
+            )
+            self._ocr = FastPlateOCR(
+                onnx_model_path=ocr_model_path,
+                plate_config_path=ocr_config_path,
+                providers=providers,
+                sess_options=sess_options,
+            )
+            return True
+        except Exception as e:
+            self.load_error = str(e)
+            print(f"[LicensePlateRecognizer] Plate recognition disabled: {e}")
+            return False
 
     def is_recognized(self, track_id: int) -> bool:
         """Returns True if the vehicle already has a recognized plate."""
@@ -79,13 +163,59 @@ class LicensePlateRecognizer:
         """Returns cached plate result for a vehicle."""
         return self._cache.get(track_id)
 
+    def update(
+        self,
+        frame: np.ndarray,
+        vehicles: Sequence[Tuple[int, Tuple[int, int, int, int]]],
+    ) -> List[PlateResult]:
+        """Processes all tracked vehicles of a frame within the per-frame OCR budget.
+
+        Args:
+            frame: Full BGR video frame.
+            vehicles: (track_id, bbox) pairs of the current frame.
+
+        Returns:
+            Plates finalized during this frame (each vehicle is reported only once).
+        """
+        if not self.enabled:
+            return []
+
+        self._frame_idx += 1
+        new_results: List[PlateResult] = []
+
+        for track_id, _ in vehicles:
+            self._states.setdefault(track_id, _TrackState()).last_seen_frame = self._frame_idx
+
+        # Largest (closest) vehicles first: their plates are the most legible
+        pending = [
+            (tid, bbox)
+            for tid, bbox in vehicles
+            if tid not in self._cache and tid not in self._given_up and self._is_due(tid, bbox)
+        ]
+        pending.sort(key=lambda v: v[1][2] - v[1][0], reverse=True)
+
+        for track_id, bbox in pending[: self.max_reads_per_frame]:
+            result = self.recognize(frame, bbox, track_id)
+            if result is not None:
+                new_results.append(result)
+
+        new_results.extend(self._settle_lost_tracks())
+        return new_results
+
+    def _is_due(self, track_id: int, bbox: Tuple[int, int, int, int]) -> bool:
+        x1, y1, x2, y2 = bbox
+        if x2 - x1 < self.min_bbox_width or y2 - y1 < 50:
+            return False
+        state = self._states.get(track_id)
+        return state is None or self._frame_idx - state.last_attempt_frame >= self.attempt_interval_frames
+
     def recognize(
         self,
         frame: np.ndarray,
         bbox: Tuple[int, int, int, int],
         track_id: int,
     ) -> Optional[PlateResult]:
-        """Locates and recognizes license plate from vehicle bounding box.
+        """Performs one read attempt for a vehicle and returns the plate once it is reliable.
 
         Args:
             frame: Full BGR video frame.
@@ -93,122 +223,137 @@ class LicensePlateRecognizer:
             track_id: Vehicle track ID.
 
         Returns:
-            PlateResult object or None if recognition fails.
+            PlateResult when the vehicle's plate is (or becomes) finalized, otherwise None.
         """
         if not self.enabled or track_id is None:
             return None
 
-        # If already recognized for this track, return cached result immediately
         if track_id in self._cache:
             return self._cache[track_id]
 
         x1, y1, x2, y2 = bbox
-        bw = x2 - x1
-        bh = y2 - y1
-
-        # Only trigger OCR when vehicle is sufficiently close to camera
-        if bw < self.min_bbox_width or bh < 50:
+        if x2 - x1 < self.min_bbox_width or y2 - y1 < 50:
             return None
 
-        # 1. Crop candidate region for plate (lower 40% of vehicle, centered 70% width)
-        plate_y1 = max(0, y1 + int(bh * 0.55))
-        plate_y2 = min(frame.shape[0], y2)
-        plate_x1 = max(0, x1 + int(bw * 0.15))
-        plate_x2 = min(frame.shape[1], x2 - int(bw * 0.15))
+        state = self._states.setdefault(track_id, _TrackState(last_seen_frame=self._frame_idx))
+        state.attempts += 1
+        state.last_attempt_frame = self._frame_idx
 
-        if plate_y2 <= plate_y1 or plate_x2 <= plate_x1:
+        reading = self._read_plate(frame, bbox)
+        if reading is not None:
+            text, conf, crop, region = reading
+            entry = state.readings.setdefault(text, _PlateReading())
+            entry.votes += 1
+            if conf > entry.best_confidence:
+                entry.best_confidence = conf
+                entry.best_crop = crop
+                entry.region = region
+
+        best_text, best = self._best_reading(state)
+        if best is not None and (
+            best.best_confidence >= self.high_confidence
+            or (best.votes >= 2 and best.best_confidence >= self.min_confidence)
+        ):
+            return self._finalize(track_id, best_text, best)
+
+        if state.attempts >= self.max_attempts:
+            return self._settle(track_id)
+        return None
+
+    def _read_plate(
+        self, frame: np.ndarray, bbox: Tuple[int, int, int, int]
+    ) -> Optional[Tuple[str, float, np.ndarray, Optional[str]]]:
+        """Detects the plate inside the vehicle crop and reads it.
+
+        Returns:
+            (text, mean_char_confidence, plate_crop_bgr, region) or None if unreadable.
+        """
+        x1, y1, x2, y2 = bbox
+        pad_x, pad_y = int((x2 - x1) * 0.05), int((y2 - y1) * 0.05)
+        vx1, vy1 = max(0, x1 - pad_x), max(0, y1 - pad_y)
+        vx2, vy2 = min(frame.shape[1], x2 + pad_x), min(frame.shape[0], y2 + pad_y)
+        vehicle_crop = frame[vy1:vy2, vx1:vx2]
+        if vehicle_crop.size == 0:
             return None
 
-        candidate_crop = frame[plate_y1:plate_y2, plate_x1:plate_x2].copy()
-        if candidate_crop.size == 0:
+        try:
+            detections = self._detector.predict(vehicle_crop)
+            if not detections:
+                return None
+            plate_box = max(detections, key=lambda d: d.confidence).bounding_box
+            px1, py1 = max(0, plate_box.x1), max(0, plate_box.y1)
+            px2, py2 = min(vehicle_crop.shape[1], plate_box.x2), min(vehicle_crop.shape[0], plate_box.y2)
+            if px2 - px1 < 8 or py2 - py1 < 4:
+                return None
+            plate_crop = vehicle_crop[py1:py2, px1:px2].copy()
+
+            prediction = self._ocr.run_one(cv2.cvtColor(plate_crop, cv2.COLOR_BGR2RGB), return_confidence=True)
+        except Exception as e:
+            print(f"[LicensePlateRecognizer] Read error: {e}")
             return None
 
-        # 2. Extract best rectangular plate ROI via Morphological Gradient
-        plate_img = self._locate_plate_contour(candidate_crop)
-        if plate_img is None or plate_img.size == 0:
-            plate_img = candidate_crop
+        text = prediction.plate
+        if len(text) < self.min_plate_length or prediction.char_probs is None:
+            return None
+        char_probs = np.asarray(prediction.char_probs, dtype=float)[: len(text)]
+        if float(char_probs.min()) < self.min_char_confidence:
+            return None
+        return text, float(char_probs.mean()), plate_crop, prediction.region
 
-        # Resize to standard height (e.g. 70px) for crisp OCR
-        h_p, w_p = plate_img.shape[:2]
-        if h_p > 0 and w_p > 0:
-            target_h = 70
-            target_w = int(w_p * (target_h / h_p))
-            plate_img = cv2.resize(plate_img, (max(140, target_w), target_h), interpolation=cv2.INTER_CUBIC)
+    @staticmethod
+    def _best_reading(state: _TrackState) -> Tuple[Optional[str], Optional[_PlateReading]]:
+        if not state.readings:
+            return None, None
+        # Vote weight: repeated readings dominate, confidence breaks ties
+        text = max(state.readings, key=lambda t: state.readings[t].votes * state.readings[t].best_confidence)
+        return text, state.readings[text]
 
-        # 3. Read text using Tesseract or Pure OpenCV fallback
-        recognized_text = ""
-        conf = 0.85
+    def _settle(self, track_id: int) -> Optional[PlateResult]:
+        """Finalizes the best candidate if reliable enough, otherwise gives up on the vehicle."""
+        state = self._states.get(track_id)
+        best_text, best = self._best_reading(state) if state else (None, None)
+        if best is not None and best.best_confidence >= self.min_confidence:
+            return self._finalize(track_id, best_text, best)
+        self._given_up.add(track_id)
+        self._states.pop(track_id, None)
+        return None
 
-        if self._tesseract_available:
-            try:
-                # Preprocess for Tesseract: grayscale + threshold
-                gray = cv2.cvtColor(plate_img, cv2.COLOR_BGR2GRAY)
-                thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-                custom_config = r"--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.-"
-                text = self._pytesseract.image_to_string(thresh, config=custom_config)
-                clean = re.sub(r"[^0-9A-Z.-]", "", text.strip().upper())
-                if len(clean) >= 5:
-                    recognized_text = clean
-            except Exception:
-                recognized_text = ""
+    def _settle_lost_tracks(self) -> List[PlateResult]:
+        """Settles vehicles that left the scene before their plate was finalized."""
+        lost = [
+            tid
+            for tid, st in self._states.items()
+            if self._frame_idx - st.last_seen_frame > self.lost_track_frames
+        ]
+        results: List[PlateResult] = []
+        for tid in lost:
+            res = self._settle(tid)
+            if res is not None:
+                results.append(res)
+        return results
 
-        # Fallback heuristic: If OCR did not find a valid plate text, assign consistent deterministic plate
-        if not recognized_text or len(recognized_text) < 5:
-            # Generate deterministic sample plate based on track_id for robust live demo
-            sample_idx = abs(hash(track_id)) % len(self.PRESET_SAMPLE_PLATES)
-            recognized_text = self.PRESET_SAMPLE_PLATES[sample_idx]
-            conf = 0.90
-
-        # Draw clean border around plate thumbnail for GUI display
-        thumb = plate_img.copy()
+    def _finalize(self, track_id: int, text: str, reading: _PlateReading) -> PlateResult:
+        thumb = reading.best_crop
+        h_p, w_p = thumb.shape[:2]
+        target_h = 70
+        thumb = cv2.resize(thumb, (max(140, int(w_p * target_h / h_p)), target_h), interpolation=cv2.INTER_CUBIC)
         cv2.rectangle(thumb, (0, 0), (thumb.shape[1] - 1, thumb.shape[0] - 1), (0, 255, 0), 2)
 
         result = PlateResult(
             track_id=track_id,
-            plate_text=recognized_text,
-            confidence=conf,
+            plate_text=text,
+            confidence=reading.best_confidence,
             crop_image=thumb,
             timestamp=datetime.now().strftime("%H:%M:%S"),
+            region=reading.region,
         )
-
         self._cache[track_id] = result
+        self._states.pop(track_id, None)
         return result
 
-    def _locate_plate_contour(self, img: np.ndarray) -> Optional[np.ndarray]:
-        """Detects rectangular plate contour using morphological operations."""
-        try:
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            blur = cv2.bilateralFilter(gray, 9, 75, 75)
-
-            # Morphological blackhat to reveal dark text on bright plate
-            rect_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (13, 5))
-            blackhat = cv2.morphologyEx(blur, cv2.MORPH_BLACKHAT, rect_kernel)
-
-            # Sobel vertical gradient
-            sobelx = cv2.Sobel(blackhat, cv2.CV_8U, 1, 0, ksize=3)
-            sobelx = cv2.convertScaleAbs(sobelx)
-
-            # Otsu threshold
-            _, thresh = cv2.threshold(sobelx, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-            # Close gaps
-            close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
-            closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, close_kernel)
-
-            contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            contours = sorted(contours, key=cv2.contourArea, reverse=True)[:5]
-
-            for c in contours:
-                x, y, w, h = cv2.boundingRect(c)
-                aspect_ratio = float(w) / max(1, float(h))
-                # Standard motorcycle/car plate aspect ratio range
-                if 1.4 <= aspect_ratio <= 5.5 and w > 40 and h > 15:
-                    return img[y : y + h, x : x + w]
-
-            return None
-        except Exception:
-            return None
-
     def reset(self) -> None:
-        """Clears cached recognized plates."""
+        """Clears cached recognized plates and pending readings."""
         self._cache.clear()
+        self._states.clear()
+        self._given_up.clear()
+        self._frame_idx = 0

@@ -1,0 +1,6 @@
+# AutoGuardian - License plate recognition packages
+# Install AFTER requirements.txt with:  pip install --no-deps -r requirements-nodeps.txt
+# (--no-deps: these declare opencv-python-headless>=5 which conflicts with opencv-python
+#  and forces numpy 2; their real dependencies are already listed in requirements.txt)
+fast-plate-ocr==1.1.0
+open-image-models==0.6.0

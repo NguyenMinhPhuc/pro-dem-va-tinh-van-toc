@@ -15,15 +15,16 @@ from typing import Any, Dict, List, Optional
 class AppConfig:
     """Manages application configurations stored in json files."""
 
-    def __init__(self, config_path: str = "configs/config.json", zones_path: str = "configs/zones.json") -> None:
+    def __init__(self, config_path: str = "configs/config.json", zones_path: Optional[str] = None) -> None:
         """Initialize the AppConfig with file paths.
 
         Args:
             config_path: Relative or absolute path to config.json.
-            zones_path: Relative or absolute path to zones.json.
+            zones_path: Relative or absolute path to zones.json. Defaults to zones.json
+                next to config_path.
         """
         self.config_path: Path = Path(config_path)
-        self.zones_path: Path = Path(zones_path)
+        self.zones_path: Path = Path(zones_path) if zones_path else self.config_path.parent / "zones.json"
 
         self.config_data: Dict[str, Any] = {}
         self.zones_data: Dict[str, Any] = {}
@@ -90,6 +91,11 @@ class AppConfig:
         return self.config_data.get("ai", {}).get("model_path", "models/yolov8n.pt")
 
     @property
+    def device(self) -> str:
+        """Inference device: 'auto' (GPU if available, else CPU), 'cpu', 'cuda' or '0'."""
+        return str(self.config_data.get("ai", {}).get("device", "auto"))
+
+    @property
     def input_size(self) -> tuple[int, int]:
         ai = self.config_data.get("ai", {})
         return (ai.get("input_width", 640), ai.get("input_height", 640))
@@ -128,6 +134,30 @@ class AppConfig:
     @property
     def min_bbox_width_for_plate(self) -> int:
         return int(self.config_data.get("plate_recognition", {}).get("min_bbox_width", 90))
+
+    @property
+    def plate_detector_model(self) -> str:
+        return self.config_data.get("plate_recognition", {}).get(
+            "detector_model", "models/plates/yolo-v9-t-384-license-plates-end2end.onnx"
+        )
+
+    @property
+    def plate_ocr_model(self) -> str:
+        return self.config_data.get("plate_recognition", {}).get("ocr_model", "models/plates/cct_s_v2_global.onnx")
+
+    @property
+    def plate_ocr_config(self) -> str:
+        return self.config_data.get("plate_recognition", {}).get(
+            "ocr_config", "models/plates/cct_s_v2_global_plate_config.yaml"
+        )
+
+    @property
+    def plate_min_confidence(self) -> float:
+        return float(self.config_data.get("plate_recognition", {}).get("min_confidence", 0.9))
+
+    @property
+    def plate_max_reads_per_frame(self) -> int:
+        return int(self.config_data.get("plate_recognition", {}).get("max_reads_per_frame", 2))
 
     # Streaming properties
     @property

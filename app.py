@@ -5,11 +5,33 @@ Application entry point.
 
 from __future__ import annotations
 
+import multiprocessing
 import os
 import sys
 
-# Pre-load PyTorch runtime libraries before Qt to prevent DLL initialization conflicts on Windows
+
+def _prepare_frozen_runtime() -> None:
+    """Packaged .exe: run from the exe folder, where configs/, models/ and outputs/ live.
+
+    A windowed exe has no console (sys.stdout/stderr are None), so logs go to a file.
+    Must run before importing torch/ultralytics, which bind their loggers to stdout.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    os.chdir(os.path.dirname(sys.executable))
+    if sys.stdout is None or sys.stderr is None:
+        os.makedirs("outputs/logs", exist_ok=True)
+        log_file = open("outputs/logs/autoguardian.log", "a", encoding="utf-8", buffering=1)
+        sys.stdout = sys.stdout or log_file
+        sys.stderr = sys.stderr or log_file
+
+
+_prepare_frozen_runtime()
+
+# Pre-load PyTorch and ONNX Runtime libraries before Qt: PyQt5 ships an old MSVC runtime
+# (msvcp140 14.26) that crashes recent onnxruntime builds if it is loaded first on Windows
 import torch
+import onnxruntime  # noqa: F401
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication
 
@@ -33,4 +55,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     main()

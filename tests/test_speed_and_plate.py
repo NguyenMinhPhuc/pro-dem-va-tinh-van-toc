@@ -3,6 +3,7 @@
 import os
 import shutil
 import unittest
+import cv2
 import numpy as np
 
 from src.core.speed_estimator import SpeedEstimator
@@ -47,32 +48,54 @@ class TestSpeedAndPlate(unittest.TestCase):
         self.assertGreater(speed_moving, 20.0)
         self.assertLess(speed_moving, 60.0)
 
-    def test_plate_recognizer(self):
+    def test_plate_recognizer_reads_real_plate(self):
         recognizer = LicensePlateRecognizer(min_bbox_width=50, enabled=True)
+        if not recognizer.enabled:
+            self.skipTest(f"Plate models unavailable: {recognizer.load_error}")
 
-        # Create dummy car frame (200x200) with a simulated license plate region
-        dummy_frame = np.zeros((300, 300, 3), dtype=np.uint8)
-        # Draw white rectangle for plate
-        dummy_frame[200:230, 80:220] = (255, 255, 255)
-        # Draw some dark text marks
-        dummy_frame[210:220, 100:200] = (0, 0, 0)
+        # Real vehicle crop (UK plate "EF10 DZT") filling the whole frame
+        car = cv2.imread(os.path.join(os.path.dirname(__file__), "fixtures", "uk_car_EF10DZT.jpg"))
+        self.assertIsNotNone(car)
+        bbox = (0, 0, car.shape[1], car.shape[0])
 
-        # Vehicle bbox: [x1, y1, x2, y2]
-        bbox = (50, 50, 250, 250)
-
-        # First recognition: triggers OCR and returns result
         self.assertFalse(recognizer.is_recognized(track_id=10))
-        plate_res = recognizer.recognize(dummy_frame, bbox, track_id=10)
-        self.assertIsNotNone(plate_res)
+        results = []
+        for _ in range(recognizer.max_attempts * recognizer.attempt_interval_frames):
+            results.extend(recognizer.update(car, [(10, bbox)]))
+            if results:
+                break
+
+        self.assertEqual(len(results), 1)
+        plate_res = results[0]
         self.assertEqual(plate_res.track_id, 10)
-        self.assertIsInstance(plate_res.plate_text, str)
-        self.assertGreater(len(plate_res.plate_text), 4)
+        self.assertEqual(plate_res.plate_text, "EF10DZT")
+        self.assertGreaterEqual(plate_res.confidence, recognizer.min_confidence)
         self.assertIsNotNone(plate_res.crop_image)
 
-        # Second recognition: returns cached result immediately
+        # Finalized plate is cached and never reported twice
         self.assertTrue(recognizer.is_recognized(track_id=10))
-        plate_res2 = recognizer.recognize(dummy_frame, bbox, track_id=10)
-        self.assertEqual(plate_res.plate_text, plate_res2.plate_text)
+        self.assertEqual(recognizer.update(car, [(10, bbox)]), [])
+        self.assertEqual(recognizer.get_plate(10).plate_text, "EF10DZT")
+
+    def test_plate_recognizer_rejects_frame_without_plate(self):
+        recognizer = LicensePlateRecognizer(min_bbox_width=50, enabled=True)
+        if not recognizer.enabled:
+            self.skipTest(f"Plate models unavailable: {recognizer.load_error}")
+
+        # Blank vehicle region: no plate must be invented
+        dummy_frame = np.full((300, 300, 3), 90, dtype=np.uint8)
+        bbox = (50, 50, 250, 250)
+        results = []
+        for _ in range(recognizer.max_attempts * recognizer.attempt_interval_frames + 1):
+            results.extend(recognizer.update(dummy_frame, [(11, bbox)]))
+        self.assertEqual(results, [])
+        self.assertFalse(recognizer.is_recognized(track_id=11))
+
+    def test_plate_recognizer_missing_models_disables(self):
+        recognizer = LicensePlateRecognizer(detector_model_path="models/plates/missing.onnx")
+        self.assertFalse(recognizer.enabled)
+        self.assertIsNotNone(recognizer.load_error)
+        self.assertEqual(recognizer.update(np.zeros((300, 300, 3), np.uint8), [(1, (0, 0, 300, 300))]), [])
 
     def test_database_plate_and_speed_migration(self):
         db_path = os.path.join(self.test_dir, "migrated.db")

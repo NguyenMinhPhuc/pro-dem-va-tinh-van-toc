@@ -20,6 +20,39 @@ from src.utils.constants import (
 from src.utils.geometry import calculate_bottom_center, calculate_centroid
 
 
+def resolve_device(device: str = "auto") -> str:
+    """Maps 'auto' to the first CUDA GPU when available, otherwise CPU.
+
+    An explicit GPU request on a machine without CUDA also falls back to CPU,
+    so the same config works on GPU and CPU-only machines.
+    """
+    device = str(device).lower()
+    if device == "cpu":
+        return "cpu"
+    if _cuda_usable():
+        return "cuda:0" if device == "auto" else device
+    if device != "auto":
+        print(f"[YOLOVehicleDetector] CUDA not available, falling back to CPU (requested '{device}').")
+    return "cpu"
+
+
+def _cuda_usable() -> bool:
+    """True only if a CUDA device can actually allocate memory.
+
+    torch.cuda.is_available() alone can report True while no device is usable
+    (e.g. hidden GPUs, driver mismatch), which would make every inference fail.
+    """
+    import torch
+
+    try:
+        if not torch.cuda.is_available() or torch.cuda.device_count() == 0:
+            return False
+        torch.zeros(1, device="cuda:0")
+        return True
+    except Exception:
+        return False
+
+
 @dataclass
 class VehicleDetection:
     """Represents a single detected and tracked vehicle in a video frame."""
@@ -50,18 +83,19 @@ class YOLOVehicleDetector:
         self,
         model_path: str = "models/yolov8n.pt",
         target_classes: Optional[List[int]] = None,
-        device: str = "cpu",
+        device: str = "auto",
     ) -> None:
         """Initializes the YOLO vehicle detector.
 
         Args:
             model_path: Path to YOLO weights (.pt file).
             target_classes: List of class IDs to filter. Defaults to vehicle classes.
-            device: 'cpu' or 'cuda' or '0'.
+            device: 'auto' (GPU if available, else CPU), 'cpu', 'cuda' or '0'.
         """
         self.model_path = Path(model_path)
         self.target_classes = target_classes or list(self.DEFAULT_VEHICLE_CLASSES.keys())
-        self.device = device
+        self.device = resolve_device(device)
+        print(f"[YOLOVehicleDetector] Using device: {self.device}")
 
         if not self.model_path.exists():
             # If specified model doesn't exist, fallback to yolov8n.pt in current dir or download

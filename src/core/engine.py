@@ -86,6 +86,7 @@ class AutoGuardianAIEngine:
         self.detector = YOLOVehicleDetector(
             model_path=self.config.model_path,
             target_classes=self.config.target_classes,
+            device=self.config.device,
         )
 
         # Initialize line counter
@@ -120,6 +121,11 @@ class AutoGuardianAIEngine:
         self.plate_recognizer = LicensePlateRecognizer(
             min_bbox_width=self.config.min_bbox_width_for_plate,
             enabled=self.config.plate_recognition_enabled,
+            detector_model_path=self.config.plate_detector_model,
+            ocr_model_path=self.config.plate_ocr_model,
+            ocr_config_path=self.config.plate_ocr_config,
+            min_confidence=self.config.plate_min_confidence,
+            max_reads_per_frame=self.config.plate_max_reads_per_frame,
         )
 
         # Initialize dual lane speed trap zones (Làn Vào & Làn Ra)
@@ -243,7 +249,6 @@ class AutoGuardianAIEngine:
         )
 
         # 2. Speed Estimation, Speed Trap & License Plate Recognition
-        new_plates: List[PlateResult] = []
         det_map: Dict[int, VehicleDetection] = {}
 
         # 2a. Update Speed Trap (Two reference lines)
@@ -261,13 +266,14 @@ class AutoGuardianAIEngine:
                     speed = trap_speed
                 det.speed_kmh = speed
 
-                # License plate recognition (Trigger-based)
-                was_recognized = self.plate_recognizer.is_recognized(det.track_id)
-                plate_res = self.plate_recognizer.recognize(raw_frame, det.bbox, det.track_id)
-                if plate_res:
-                    det.license_plate = plate_res.plate_text
-                    if not was_recognized:
-                        new_plates.append(plate_res)
+        # 2b. License plate recognition (multi-frame voting, per-frame OCR budget)
+        new_plates: List[PlateResult] = self.plate_recognizer.update(
+            raw_frame, [(tid, det.bbox) for tid, det in det_map.items()]
+        )
+        for tid, det in det_map.items():
+            plate_res = self.plate_recognizer.get_plate(tid)
+            if plate_res:
+                det.license_plate = plate_res.plate_text
 
         # 3. Line Crossing Analytics
         new_crossings = self.line_counter.update(detections)

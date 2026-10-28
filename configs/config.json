@@ -5,6 +5,7 @@
   },
   "ai": {
     "model_path": "models/yolov8n.pt",
+    "device": "auto",
     "input_width": 640,
     "input_height": 640,
     "default_confidence": 0.5,
@@ -25,6 +26,11 @@
   "plate_recognition": {
     "enabled": true,
     "min_bbox_width": 90,
+    "detector_model": "models/plates/yolo-v9-t-384-license-plates-end2end.onnx",
+    "ocr_model": "models/plates/cct_s_v2_global.onnx",
+    "ocr_config": "models/plates/cct_s_v2_global_plate_config.yaml",
+    "min_confidence": 0.9,
+    "max_reads_per_frame": 2,
     "save_plate_crop": true
   },
   "streaming": {

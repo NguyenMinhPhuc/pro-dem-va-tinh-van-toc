@@ -1,6 +1,8 @@
 """Unit tests for AutoGuardian GUI components."""
 
+import json
 import os
+import shutil
 import sys
 import torch  # Ensure PyTorch DLLs are loaded before Qt
 import unittest
@@ -19,6 +21,29 @@ if app is None:
 
 
 class TestGUIComponents(unittest.TestCase):
+    test_dir = "outputs/test_gui"
+
+    @classmethod
+    def setUpClass(cls):
+        # Isolated config/zones/storage so the tests never touch the real configs/ and outputs/
+        shutil.rmtree(cls.test_dir, ignore_errors=True)
+        os.makedirs(cls.test_dir, exist_ok=True)
+        with open("configs/config.json", "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        cfg["storage"] = {
+            "db_path": os.path.join(cls.test_dir, "gui_test.db"),
+            "captures_dir": os.path.join(cls.test_dir, "captures"),
+            "reports_dir": os.path.join(cls.test_dir, "reports"),
+            "recordings_dir": os.path.join(cls.test_dir, "recordings"),
+        }
+        cls.config_path = os.path.join(cls.test_dir, "config.json")
+        with open(cls.config_path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.test_dir, ignore_errors=True)
+
     def test_canvas_drawing_mode(self):
         canvas = InteractiveVideoCanvas()
         self.assertEqual(canvas.mode, DrawingMode.VIEW)
@@ -60,7 +85,7 @@ class TestGUIComponents(unittest.TestCase):
         self.assertIsNotNone(viewer_dlg)
 
     def test_main_window_init(self):
-        window = MainWindow()
+        window = MainWindow(config_path=self.config_path)
         self.assertIsNotNone(window.canvas)
         self.assertIsNotNone(window.table_violations)
         self.assertIsNotNone(window.table_plates)
@@ -74,7 +99,7 @@ class TestGUIComponents(unittest.TestCase):
         window.close()
 
     def test_plate_speed_table_live_update(self):
-        window = MainWindow()
+        window = MainWindow(config_path=self.config_path)
 
         # Simulate newly recognized plate with unknown speed initially ("Đang đo...")
         plate_data = {

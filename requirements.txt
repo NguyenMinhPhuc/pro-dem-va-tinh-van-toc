@@ -9,8 +9,16 @@ torch>=2.0.0
 torchvision>=0.15.0
 
 # Tracking & Math Helpers
+lap>=0.5.12
 scipy>=1.10.0
 scikit-learn>=1.2.0
+
+# License Plate Recognition (ONNX Runtime, CPU-friendly)
+# + `pip install --no-deps -r requirements-nodeps.txt` (fast-plate-ocr, open-image-models)
+onnxruntime>=1.17.0
+pyyaml>=6.0
+rich>=13.0.0
+tqdm>=4.66.0
 
 # GUI Framework
 PyQt5>=5.15.9

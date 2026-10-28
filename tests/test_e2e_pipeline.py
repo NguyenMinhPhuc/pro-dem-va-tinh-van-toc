@@ -23,6 +23,7 @@ from src.storage.database import DatabaseManager
 from src.storage.evidence import EvidenceManager
 from src.storage.exporter import ReportExporter
 from src.storage.recorder import VideoRecorder
+from src.utils.config import AppConfig
 
 
 class TestEndToEndPipeline(unittest.TestCase):
@@ -50,7 +51,11 @@ class TestEndToEndPipeline(unittest.TestCase):
         recorder = VideoRecorder(recordings_dir)
         exporter = ReportExporter(db, default_reports_dir=reports_dir)
 
+        # Isolated zones file so the test never overwrites the real configs/zones.json
+        config = AppConfig(zones_path=os.path.join(self.test_dir, "zones.json"))
+
         engine = AutoGuardianAIEngine(
+            config=config,
             db_manager=db,
             evidence_manager=evidence,
             video_recorder=recorder,

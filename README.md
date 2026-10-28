@@ -13,7 +13,7 @@
 Ứng dụng tiếp nhận luồng video từ **File video (`.mp4`, `.avi`, `.mkv`)**, **Webcam trực tiếp (USB/Built-in)** hoặc **Camera IP chuẩn RTSP**, áp dụng mô hình Deep Learning **YOLOv8** kết hợp thuật toán theo dõi **ByteTrack** để thực hiện:
 * **Phát hiện & Bám vết đối tượng phương tiện (Vehicle Detection & Tracking):** Đánh `Track ID` duy nhất cho từng xe (`car`, `motorcycle`, `bus`, `truck`).
 * **Ước lượng tốc độ xe theo thời gian thực (Speed Estimation - km/h):** Tính toán vận tốc di chuyển tức thời dựa trên khoảng cách mét/pixel và thời gian thực tế, hiển thị trực tiếp trên bounding box.
-* **Nhận diện biển số xe tự động (ANPR/ALPR) tối ưu cho Raspberry Pi:** Sử dụng giải thuật phân tích hình thái học OpenCV kết hợp Trigger-based OCR siêu nhẹ (chỉ nhận diện 1 lần khi xe ở cự ly tối ưu), giữ nguyên FPS mượt mà trên phần cứng hạn chế như Raspberry Pi và Webcam.
+* **Nhận diện biển số xe tự động (ANPR/ALPR) bằng Deep Learning, chạy tốt trên CPU:** Hai tầng ONNX Runtime: mô hình YOLOv9 định vị biển số trong khung xe (`open-image-models`), sau đó mô hình OCR biển số đa quốc gia (`fast-plate-ocr`, 65 khu vực gồm Việt Nam, Anh, EU, Mỹ...) đọc ký tự kèm độ tin cậy từng ký tự. Mỗi xe được đọc nhiều lần khi tiến lại gần camera và bỏ phiếu theo độ tin cậy; chỉ biển số đạt ngưỡng tin cậy (mặc định 0.9) mới được hiển thị - **không bao giờ tự bịa biển số** khi ảnh quá mờ/nhỏ.
 * **Danh sách biển số xe Real-time (Live Plate Feed):** Hiển thị danh sách xe vừa đi qua kèm ảnh crop thumbnail biển số sắc nét, biển số nhận diện, vận tốc xe và thời gian.
 * **Đếm lưu lượng xe qua vạch ảo (Virtual Line Crossing Analytics):** Dùng phép toán Tích hướng (Cross-Product) và giao cắt vector; **bảo đảm mỗi Track ID chỉ được đếm đúng 1 lần duy nhất** trong suốt chu kỳ xuất hiện.
 * **Phát hiện đỗ xe trái phép trong vùng cấm (Parking Violation Analytics):** Kiểm tra vị trí xe trong đa giác ROI (`Point-in-polygon`). Nếu xe đứng yên trong vùng cấm quá thời gian ngưỡng ($T_{stay} > T_{threshold}$, mặc định 30 giây) và độ dịch chuyển $\Delta d < \epsilon$, hệ thống tự động kích hoạt còi báo, nhấp nháy màn hình và chụp ảnh bằng chứng vi phạm.
@@ -77,6 +77,8 @@ flowchart LR
 ### 2. Danh mục Tech Stack
 * **Ngôn ngữ:** Python 3.11 (hoặc Python 3.10+)
 * **Thị giác Máy tính:** `ultralytics` (YOLOv8), `opencv-python`, `torch`, `torchvision`, `lap` (ByteTrack)
+* **Nhận diện biển số:** `onnxruntime`, `open-image-models` (YOLOv9 plate detector), `fast-plate-ocr` (OCR đa quốc gia)
+* **Thiết bị suy luận:** tự động dùng GPU NVIDIA nếu có, nếu không tự chuyển sang CPU (`"device": "auto"` trong `configs/config.json`)
 * **Giao diện người dùng (GUI):** `PyQt5` (Dark Theme chuyên nghiệp, Interactive Canvas)
 * **Đại số tuyến tính & Hình học:** `numpy`, `scipy`, `scikit-learn`
 * **Lưu trữ & Báo cáo:** `sqlite3`, `pandas`, `openpyxl`
@@ -92,7 +94,8 @@ AutoGuardian/
 │   ├── config.json          # File cấu hình hệ thống, AI, ngưỡng thời gian, storage
 │   └── zones.json           # Tọa độ vạch ảo và vùng đa giác cấm đỗ ROI
 ├── models/
-│   └── yolov8n.pt           # Trọng số mô hình YOLOv8 pre-trained
+│   ├── yolov8n.pt           # Trọng số mô hình YOLOv8 pre-trained
+│   └── plates/              # Mô hình ONNX định vị biển số (YOLOv9) + OCR biển số
 ├── outputs/
 │   ├── captures/            # Ảnh chụp bằng chứng xe vi phạm (.jpg)
 │   ├── recordings/          # Video ghi hình luồng output (.mp4, .avi)
@@ -102,6 +105,7 @@ AutoGuardian/
 │   │   ├── detector.py      # Bộ nhận diện xe hơi YOLOv8 và trích xuất bbox
 │   │   ├── line_counter.py  # Logic đếm xe qua vạch (Cross-product, đếm duy nhất 1 lần)
 │   │   ├── parking_analyzer.py # Logic cảnh báo đỗ xe trái phép trong vùng đa giác ROI
+│   │   ├── plate_recognizer.py # Định vị + OCR biển số (ONNX), bỏ phiếu nhiều khung hình
 │   │   └── engine.py        # Bộ điều phối AI Engine hợp nhất
 │   ├── gui/
 │   │   ├── canvas.py        # Canvas hiển thị video & tương tác chuột vẽ vạch/ROI
@@ -128,7 +132,9 @@ AutoGuardian/
 │   ├── test_storage_and_utils.py # Kiểm thử SQLite, exporter, geometry, drawing
 │   └── test_streaming.py    # Kiểm thử bộ đọc video và hàng đợi frame dropping
 ├── app.py                   # Điểm khởi chạy chính của ứng dụng
+├── build_exe.ps1            # Script đóng gói thành AutoGuardian.exe (PyInstaller)
 ├── requirements.txt         # Danh sách thư viện phụ thuộc
+├── requirements-nodeps.txt  # Thư viện biển số (cài với --no-deps)
 └── README.md                # Tài liệu hướng dẫn
 ```
 
@@ -149,18 +155,35 @@ Mở Terminal hoặc PowerShell tại thư mục dự án:
 uv venv --python 3.11 .venv
 .venv\Scripts\activate
 uv pip install -r requirements.txt
+uv pip install --no-deps -r requirements-nodeps.txt
 
 # Cách 2: Sử dụng venv và pip truyền thống
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
+pip install --no-deps -r requirements-nodeps.txt
 ```
+
+> Muốn dùng GPU NVIDIA khi chạy từ mã nguồn: cài PyTorch bản CUDA trước, ví dụ
+> `pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124`.
 
 ### 3. Khởi chạy Ứng dụng
 ```powershell
 # Chạy ứng dụng thông qua môi trường ảo:
 .venv\Scripts\python.exe app.py
 ```
+
+### 4. Đóng gói thành file EXE (Windows)
+```powershell
+# Bản CPU (mặc định): chạy trên mọi máy Windows x64, có hoặc không có GPU
+powershell -ExecutionPolicy Bypass -File build_exe.ps1
+
+# Bản CUDA (tùy chọn, rất nặng ~4 GB): tận dụng GPU NVIDIA, vẫn tự chạy CPU nếu máy không có GPU
+powershell -ExecutionPolicy Bypass -File build_exe.ps1 -Cuda
+```
+Kết quả nằm ở `dist\cpu\AutoGuardian\` hoặc `dist\cuda\AutoGuardian\`, kèm file nén trong `dist\` (tự chia thành
+`.zip.001`, `.zip.002`... nếu lớn hơn 1.9 GB - giải nén bằng 7-Zip, mở file `.001`). Copy nguyên thư mục sang máy khác,
+chạy `AutoGuardian.exe` - không cần cài Python. Cấu hình ở `configs\`, kết quả ở `outputs\`, log lỗi ở `outputs\logs\autoguardian.log`.
 
 ---
 
