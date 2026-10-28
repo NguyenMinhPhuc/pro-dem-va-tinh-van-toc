@@ -28,6 +28,10 @@ def _prepare_frozen_runtime() -> None:
 
 _prepare_frozen_runtime()
 
+# No network traffic from the app itself: disable Ultralytics usage analytics and online checks
+# (the model is bundled). Only video sources chosen by the user (e.g. RTSP cameras) are contacted.
+os.environ.setdefault("YOLO_OFFLINE", "1")
+
 # Pre-load PyTorch and ONNX Runtime libraries before Qt: PyQt5 ships an old MSVC runtime
 # (msvcp140 14.26) that crashes recent onnxruntime builds if it is loaded first on Windows
 import torch

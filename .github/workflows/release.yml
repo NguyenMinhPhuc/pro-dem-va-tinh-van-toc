@@ -1,0 +1,185 @@
+# Build, sign (SignPath Foundation) and publish AutoGuardian.
+#
+# - Push a tag vX.Y.Z            -> build + sign + publish release vX.Y.Z (Latest) and packages-vX.Y.Z
+# - Run manually (Actions tab)   -> build + sign; publish only if "publish" is ticked
+#
+# Code signing runs only when the repository variable SIGNPATH_ORGANIZATION_ID and the secret
+# SIGNPATH_API_TOKEN are configured (see CODE_SIGNING.md); otherwise the release is built unsigned.
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Phiên bản, dạng X.Y.Z (ví dụ 1.3.0)"
+        required: true
+      publish:
+        description: "Tạo GitHub Release (bỏ chọn = chỉ build thử)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+  SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG || 'AutoGuardian' }}
+  SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+  SIGNPATH_ARTIFACT_CONFIGURATION_SLUG: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG || 'initial' }}
+  PYTHONUTF8: "1"
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if ("${{ github.event_name }}" -eq "push") {
+            $v = "${{ github.ref_name }}".TrimStart("v"); $publish = "true"
+          } else {
+            $v = "${{ inputs.version }}"; $publish = "${{ inputs.publish }}"
+          }
+          if ($v -notmatch '^\d+\.\d+\.\d+$') { throw "Version must be X.Y.Z, got '$v'" }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          "publish=$publish" >> $env:GITHUB_OUTPUT
+          Write-Host "Version $v, publish=$publish, signing=$([bool]$env:SIGNPATH_ORGANIZATION_ID)"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build CPU package
+        run: ./build_exe.ps1 -NoZip -Version ${{ steps.ver.outputs.version }}
+
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: .venv-build\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Build GPU (CUDA) package
+        run: |
+          Remove-Item build -Recurse -Force -ErrorAction SilentlyContinue
+          .venv-build\Scripts\python.exe -m pip cache purge
+          ./build_exe.ps1 -Cuda -NoZip -Version ${{ steps.ver.outputs.version }}
+          Remove-Item .venv-build-cuda, build -Recurse -Force -ErrorAction SilentlyContinue
+
+      - name: Build installer
+        run: ./build_launcher.ps1 -AppVersion ${{ steps.ver.outputs.version }} -SkipManifest
+
+      - name: Collect binaries to sign
+        run: |
+          New-Item -ItemType Directory -Force to-sign\cpu, to-sign\cuda | Out-Null
+          Copy-Item dist\AutoGuardian-Setup.exe to-sign\
+          Copy-Item dist\cpu\AutoGuardian\AutoGuardian.exe to-sign\cpu\
+          Copy-Item dist\cuda\AutoGuardian\AutoGuardian.exe to-sign\cuda\
+          Get-PSDrive C | Format-Table Used, Free
+
+      - name: Upload unsigned binaries
+        id: upload-unsigned
+        if: env.SIGNPATH_ORGANIZATION_ID != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-binaries
+          path: to-sign/
+          retention-days: 7
+
+      - name: Sign with SignPath
+        if: env.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ env.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ env.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          # Release signing requires manual approval by an approver in SignPath
+          wait-for-completion-timeout-in-seconds: 14400
+          output-artifact-directory: signed
+          parameters: |
+            version: "${{ steps.ver.outputs.version }}"
+
+      - name: Put signed binaries in place
+        if: env.SIGNPATH_ORGANIZATION_ID != ''
+        run: |
+          Copy-Item signed\AutoGuardian-Setup.exe dist\ -Force
+          Copy-Item signed\cpu\AutoGuardian.exe dist\cpu\AutoGuardian\ -Force
+          Copy-Item signed\cuda\AutoGuardian.exe dist\cuda\AutoGuardian\ -Force
+          foreach ($f in "dist\AutoGuardian-Setup.exe", "dist\cpu\AutoGuardian\AutoGuardian.exe", "dist\cuda\AutoGuardian\AutoGuardian.exe") {
+            $sig = Get-AuthenticodeSignature $f
+            Write-Host "$f : $($sig.Status) - $($sig.SignerCertificate.Subject)"
+            if ($sig.Status -ne "Valid") { throw "Invalid signature on $f" }
+          }
+
+      - name: Package and create manifest
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          .venv-build\Scripts\python.exe tools\package_release.py dist\cpu\AutoGuardian dist\AutoGuardian-win64.zip
+          .venv-build\Scripts\python.exe tools\package_release.py dist\cuda\AutoGuardian dist\AutoGuardian-win64-cuda.zip
+          .venv-build\Scripts\python.exe tools\make_manifest.py --app-version $v --tag "packages-v$v" --out dist\manifest.json
+          Get-ChildItem dist -File | Format-Table Name, Length
+
+      - name: Upload installer (test build)
+        if: steps.ver.outputs.publish != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoGuardian-Setup-${{ steps.ver.outputs.version }}
+          path: |
+            dist/AutoGuardian-Setup.exe
+            dist/manifest.json
+          retention-days: 7
+
+      - name: Publish GitHub releases
+        if: steps.ver.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          $repo = "${{ github.repository }}"
+          $signed = [bool]$env:SIGNPATH_ORGANIZATION_ID
+          $signNote = if ($signed) {
+            "Các file exe được ký số. Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/)."
+          } else { "Bản này chưa được ký số: Windows có thể cảnh báo khi mở bộ cài (bấm More info → Run anyway)." }
+
+          @"
+          > ⚠️ **Không cần tải các file ở đây.** Hãy tải **AutoGuardian-Setup.exe** ở [bản mới nhất](https://github.com/$repo/releases/latest) – bộ cài tự tải đúng gói cho máy của bạn.
+
+          Gói ứng dụng AutoGuardian $v dành cho bộ cài: ``AutoGuardian-win64-cuda.zip.*`` (GPU NVIDIA + CPU) và ``AutoGuardian-win64.zip`` (chỉ CPU).
+          Chỉ tải thủ công khi cài cho máy không có Internet – xem [Hướng dẫn sử dụng](https://github.com/$repo/blob/main/HUONG_DAN_SU_DUNG.md).
+
+          [Code signing policy](https://github.com/$repo/blob/main/CODE_SIGNING.md)
+          "@ | Set-Content packages-notes.md -Encoding utf8
+
+          @"
+          ## Cài đặt AutoGuardian $v
+
+          1. Tải **AutoGuardian-Setup.exe** ở mục *Assets* bên dưới và mở file.
+          2. Bộ cài tự phát hiện card đồ họa và gợi ý bản **GPU NVIDIA** hoặc **Chỉ CPU**, bấm **Cài đặt**.
+          3. Cài xong có biểu tượng **AutoGuardian** trên Desktop / Start Menu; phần mềm tự kiểm tra bản cập nhật (có thể tắt).
+
+          $signNote
+
+          📖 [Hướng dẫn sử dụng](https://github.com/$repo/blob/main/HUONG_DAN_SU_DUNG.md) · 🔏 [Code signing policy](https://github.com/$repo/blob/main/CODE_SIGNING.md)
+
+          ``manifest.json`` là file thông tin phiên bản dành cho bộ cài – không cần tải.
+          "@ | Set-Content release-notes.md -Encoding utf8
+
+          $parts = Get-ChildItem dist -File | Where-Object { $_.Name -like "AutoGuardian-win64*.zip*" } | ForEach-Object { $_.FullName }
+          gh release create "packages-v$v" --repo $repo --target "${{ github.sha }}" --prerelease --latest=false `
+            --title "AutoGuardian $v – Gói dữ liệu cho bộ cài (không cần tải thủ công)" --notes-file packages-notes.md @parts
+          if ($LASTEXITCODE) { throw "Failed to create packages release" }
+
+          gh release create "v$v" --repo $repo --target "${{ github.sha }}" --latest `
+            --title "AutoGuardian v$v" --notes-file release-notes.md dist\AutoGuardian-Setup.exe dist\manifest.json
+          if ($LASTEXITCODE) { throw "Failed to create release" }

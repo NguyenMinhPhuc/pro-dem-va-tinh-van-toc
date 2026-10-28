@@ -4,6 +4,10 @@
 > **Phiên bản:** 1.0.0  
 > **Ngôn ngữ:** Python 3.10+ / 3.11  
 
+📥 [Tải bộ cài (Releases)](https://github.com/NguyenMinhPhuc/pro-dem-va-tinh-van-toc/releases/latest) ·
+📖 [Hướng dẫn sử dụng](HUONG_DAN_SU_DUNG.md) ·
+🔏 [Code signing policy](CODE_SIGNING.md)
+
 ---
 
 ## 📖 I. TỔNG QUAN HỆ THỐNG
@@ -208,7 +212,22 @@ những lần sau tự kiểm tra bản cập nhật (giữ nguyên `configs\` v
 powershell -ExecutionPolicy Bypass -File build_launcher.ps1 -AppVersion 1.1.0 -PackageTag v1.1.0
 # 3. Tạo release mới nhất (Latest) gồm dist\AutoGuardian-Setup.exe và dist\manifest.json
 ```
-Tham số bộ cài: `--variant cpu|cuda` (bỏ qua màn hình chọn), `--reinstall`, `--no-launch`, `--no-shortcuts`.
+Tham số bộ cài: `--variant cpu|cuda` (bỏ qua màn hình chọn), `--reinstall`, `--no-launch`, `--no-shortcuts`,
+`--no-update-check`.
+
+### 6. Phát hành tự động & ký số (GitHub Actions + SignPath Foundation)
+Workflow [`.github/workflows/release.yml`](.github/workflows/release.yml) build toàn bộ trên GitHub Actions
+(bản CPU, bản CUDA, bộ cài, chạy test), gửi `AutoGuardian-Setup.exe` và `AutoGuardian.exe` sang SignPath ký số,
+rồi mới đóng gói, tạo `manifest.json` và phát hành 2 release: `vX.Y.Z` (Latest, bộ cài) và `packages-vX.Y.Z`
+(Pre-release, các gói launcher tự tải).
+```powershell
+git tag v1.3.0; git push origin v1.3.0      # build + ký + phát hành
+# hoặc tab Actions -> Release -> Run workflow (bỏ chọn "publish" để chỉ build thử)
+```
+Bước ký chỉ chạy khi đã cấu hình SignPath (biến repo `SIGNPATH_ORGANIZATION_ID`, secret `SIGNPATH_API_TOKEN`;
+tuỳ chọn `SIGNPATH_PROJECT_SLUG`, `SIGNPATH_SIGNING_POLICY_SLUG`, `SIGNPATH_ARTIFACT_CONFIGURATION_SLUG`).
+Cấu hình artifact cho SignPath: [`.signpath/artifact-configuration.xml`](.signpath/artifact-configuration.xml).
+Chính sách ký số: [CODE_SIGNING.md](CODE_SIGNING.md).
 
 ---
 

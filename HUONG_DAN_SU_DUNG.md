@@ -47,8 +47,11 @@ AutoGuardian là phần mềm giám sát giao thông bằng camera trên máy t�
    <https://github.com/NguyenMinhPhuc/pro-dem-va-tinh-van-toc/releases/latest>
 2. Tải file **`AutoGuardian-Setup.exe`** (khoảng 10 MB).
 3. Mở file vừa tải.
-   - Nếu Windows hiện cảnh báo *"Windows protected your PC"*: bấm **More info** → **Run anyway**.
-     (Cảnh báo này xuất hiện vì phần mềm chưa được ký số, không phải do có virus.)
+   - Các bản phát hành được ký số hiển thị nhà phát hành **SignPath Foundation**
+     (xem [Code signing policy](CODE_SIGNING.md)).
+   - Nếu Windows vẫn hiện cảnh báo *"Windows protected your PC"*: bấm **More info** → **Run anyway**.
+     (Cảnh báo xuất hiện với bản chưa ký số, hoặc bản mới phát hành chưa đủ lượt tải để Windows "tin tưởng" –
+     không phải do có virus.)
 4. Bộ cài tự kiểm tra máy và gợi ý bản phù hợp:
 
    ![Bộ cài đặt AutoGuardian](docs/images/bo-cai-dat.png)
@@ -63,6 +66,11 @@ AutoGuardian là phần mềm giám sát giao thông bằng camera trên máy t�
 Những lần sau chỉ cần mở biểu tượng **AutoGuardian**. Nếu có phiên bản mới, phần mềm sẽ hỏi bạn có muốn
 cập nhật không. **Khi cập nhật, cấu hình (vạch đếm, vùng cấm, mốc tốc độ…) và dữ liệu (ảnh vi phạm, báo cáo)
 được giữ nguyên.**
+
+**Quyền riêng tư:** bộ cài chỉ kết nối `github.com` để tải phần mềm và kiểm tra bản cập nhật; bản thân
+AutoGuardian không gửi dữ liệu đi đâu (ngoài camera/nguồn video do bạn chọn). Muốn tắt kiểm tra cập nhật:
+bỏ chọn *"Tự kiểm tra bản cập nhật mỗi khi mở"* lúc cài, hoặc sửa `"check_updates": false` trong file
+`%LOCALAPPDATA%\AutoGuardian\installed.json`.
 
 Phần mềm được cài vào thư mục `%LOCALAPPDATA%\AutoGuardian` (thường là
 `C:\Users\<tên bạn>\AppData\Local\AutoGuardian`), không cần quyền Administrator.
@@ -258,7 +266,8 @@ Một số tùy chọn trong `configs\config.json` (sửa bằng Notepad khi ph�
 ## 7. Xử lý sự cố thường gặp
 
 **Windows báo "Windows protected your PC" khi mở bộ cài**
-Bấm **More info** → **Run anyway**. Phần mềm chưa được ký số nên Windows cảnh báo.
+Bấm **More info** → **Run anyway**. Windows cảnh báo với bản chưa ký số, hoặc bản ký số mới phát hành chưa có
+đủ "uy tín" (lượt tải) với Microsoft SmartScreen.
 
 **Bộ cài báo "Không tải được thông tin phiên bản"**
 Lần cài đầu cần Internet. Kiểm tra mạng, tường lửa hoặc proxy (cần truy cập được `github.com`).

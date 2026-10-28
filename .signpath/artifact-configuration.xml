@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath artifact configuration for AutoGuardian (copy into the SignPath project).
+
+  The release workflow uploads a GitHub artifact (zipped by actions/upload-artifact) with:
+    AutoGuardian-Setup.exe      installer / launcher
+    cpu/AutoGuardian.exe        application, CPU package
+    cuda/AutoGuardian.exe       application, GPU (CUDA) package
+  The "version" parameter is passed by the workflow; product name/version are enforced on every binary.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" required="true" />
+  </parameters>
+  <zip-file>
+    <pe-file path="AutoGuardian-Setup.exe" product-name="AutoGuardian" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+    <pe-file path="cpu/AutoGuardian.exe" product-name="AutoGuardian" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+    <pe-file path="cuda/AutoGuardian.exe" product-name="AutoGuardian" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

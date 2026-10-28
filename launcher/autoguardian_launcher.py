@@ -11,6 +11,7 @@ Tham số dòng lệnh:
     --reinstall          Cài lại (vẫn giữ configs/ và outputs/)
     --no-launch          Cài xong không mở ứng dụng
     --no-shortcuts       Không tạo shortcut Desktop / Start Menu
+    --no-update-check    Không kết nối mạng để kiểm tra cập nhật khi mở
 """
 
 from __future__ import annotations
@@ -132,10 +133,16 @@ def sha256_of(path: Path, progress: Callable[[int], None]) -> str:
 # ---------------------------------------------------------------------------
 class Installer:
     def __init__(
-        self, manifest: dict, variant: str, report: Callable[[str, float, str], None], shortcuts: bool = True
+        self,
+        manifest: dict,
+        variant: str,
+        report: Callable[[str, float, str], None],
+        shortcuts: bool = True,
+        check_updates: bool = True,
     ) -> None:
         self.manifest = manifest
         self.shortcuts = shortcuts
+        self.check_updates = check_updates
         self.variant = variant
         self.spec = manifest["variants"][variant]
         self.report = report  # (tiêu đề, phần trăm 0..100, chi tiết)
@@ -152,7 +159,10 @@ class Installer:
         self._swap_into_place(staging)
         shutil.rmtree(DOWNLOAD_DIR, ignore_errors=True)
         STATE_FILE.write_text(
-            json.dumps({"version": self.manifest["app_version"], "variant": self.variant}, indent=2),
+            json.dumps(
+                {"version": self.manifest["app_version"], "variant": self.variant, "check_updates": self.check_updates},
+                indent=2,
+            ),
             encoding="utf-8",
         )
         if self.shortcuts:
@@ -309,7 +319,7 @@ class LauncherApp:
 
         self.root = tk.Tk()
         self.root.title("AutoGuardian - Cài đặt & Khởi chạy")
-        self.root.geometry("560x300")
+        self.root.geometry("580x390")
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -339,18 +349,18 @@ class LauncherApp:
 
     def _show_status(self, text: str) -> None:
         self._clear()
-        ttk.Label(self.body, text=text, wraplength=500).pack(anchor="w")
+        ttk.Label(self.body, text=text, wraplength=520).pack(anchor="w")
 
     def _show_progress(self) -> None:
         self._clear()
         self.title_var = tk.StringVar(value="Chuẩn bị tải...")
         self.detail_var = tk.StringVar(value="")
-        ttk.Label(self.body, textvariable=self.title_var, wraplength=500).pack(anchor="w")
-        self.bar = ttk.Progressbar(self.body, length=500, maximum=100)
+        ttk.Label(self.body, textvariable=self.title_var, wraplength=520).pack(anchor="w")
+        self.bar = ttk.Progressbar(self.body, length=520, maximum=100)
         self.bar.pack(pady=10, anchor="w")
         ttk.Label(self.body, textvariable=self.detail_var, foreground="#555").pack(anchor="w")
         ttk.Label(
-            self.body, wraplength=500, foreground="#555",
+            self.body, wraplength=520, foreground="#555",
             text="Có thể đóng cửa sổ: lần mở sau sẽ tải tiếp từ chỗ đang dừng.",
         ).pack(anchor="w", pady=(10, 0))
         ttk.Button(self.body, text="Hủy", command=self._on_close).pack(anchor="e", side="bottom")
@@ -368,6 +378,9 @@ class LauncherApp:
     # ---- quy trình -----------------------------------------------------
     def _startup(self) -> None:
         state = None if self.args.reinstall else load_state()
+        if state and (not state.get("check_updates", True) or self.args.no_update_check):
+            self.ui(self._launch)  # người dùng đã tắt kiểm tra cập nhật: không kết nối mạng
+            return
         manifest = fetch_manifest(timeout=5 if state else 15)
 
         if state:
@@ -399,7 +412,7 @@ class LauncherApp:
             default = "cpu"
         else:
             info, default = "Không phát hiện GPU NVIDIA. Khuyên dùng bản CPU.", "cpu"
-        ttk.Label(self.body, text=info, wraplength=500).pack(anchor="w", pady=(0, 10))
+        ttk.Label(self.body, text=info, wraplength=520).pack(anchor="w", pady=(0, 10))
 
         choice = tk.StringVar(value=default)
         for key in ("cuda", "cpu"):
@@ -411,13 +424,25 @@ class LauncherApp:
                     text=f"{v['label']} - tải {size}, cài đặt {human_mb(v['unpacked_size'])}",
                 ).pack(anchor="w", pady=2)
 
+        check_updates = tk.BooleanVar(value=not self.args.no_update_check)
+        ttk.Checkbutton(
+            self.body, variable=check_updates,
+            text="Tự kiểm tra bản cập nhật mỗi khi mở (kết nối github.com)",
+        ).pack(anchor="w", pady=(8, 0))
         ttk.Label(self.body, text=f"Phiên bản {manifest['app_version']}  |  Cài vào: {INSTALL_ROOT}",
-                  foreground="#555", wraplength=500).pack(anchor="w", pady=(10, 0))
+                  foreground="#555", wraplength=520).pack(anchor="w", pady=(6, 0))
+        ttk.Label(
+            self.body, foreground="#555", wraplength=520,
+            text="Quyền riêng tư: bộ cài chỉ kết nối github.com để tải phần mềm và kiểm tra cập nhật. "
+                 "Ứng dụng không gửi dữ liệu đi đâu, ngoài camera/nguồn video do bạn chọn.",
+        ).pack(anchor="w", pady=(4, 0))
         buttons = ttk.Frame(self.body)
         buttons.pack(side="bottom", fill="x")
         ttk.Button(buttons, text="Thoát", command=self.root.destroy).pack(side="right")
-        ttk.Button(buttons, text="Cài đặt", command=lambda: self._start_install(manifest, choice.get())).pack(
-            side="right", padx=8)
+        ttk.Button(
+            buttons, text="Cài đặt",
+            command=lambda: self._start_install(manifest, choice.get(), check_updates.get()),
+        ).pack(side="right", padx=8)
 
     def _ask_update(self, manifest: dict, state: dict) -> None:
         if messagebox.askyesno(
@@ -429,11 +454,15 @@ class LauncherApp:
         else:
             self._launch()
 
-    def _start_install(self, manifest: dict, variant: str) -> None:
+    def _start_install(self, manifest: dict, variant: str, check_updates: Optional[bool] = None) -> None:
+        if check_updates is None:  # cập nhật / cài không giao diện: giữ lựa chọn trước đó
+            previous = load_state() or {}
+            check_updates = previous.get("check_updates", True) and not self.args.no_update_check
         self._show_progress()
         self.installer = Installer(
             manifest, variant, lambda t, p, d: self.ui(self._update_progress, t, p, d),
             shortcuts=not self.args.no_shortcuts,
+            check_updates=check_updates,
         )
         threading.Thread(target=self._install_worker, daemon=True).start()
 
@@ -482,6 +511,7 @@ def main() -> None:
     parser.add_argument("--reinstall", action="store_true")
     parser.add_argument("--no-launch", action="store_true")
     parser.add_argument("--no-shortcuts", action="store_true")
+    parser.add_argument("--no-update-check", action="store_true")
     LauncherApp(parser.parse_args()).run()
 
 

@@ -17,7 +17,9 @@
 #>
 param(
     [switch]$Cuda,
-    [switch]$NoZip
+    [switch]$NoZip,
+    # Phien ban nhung vao AutoGuardian.exe (ProductName/ProductVersion, SignPath yeu cau)
+    [string]$Version = "1.1.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -87,10 +89,15 @@ print('Plate models OK')
 "@
 
 # 3. PyInstaller (onedir: khoi dong nhanh, khong phai giai nen moi lan chay)
-Write-Host "[3/5] Chay PyInstaller" -ForegroundColor Cyan
+Write-Host "[3/5] Chay PyInstaller (phien ban $Version)" -ForegroundColor Cyan
+$workPath = "build\$(Split-Path $distRoot -Leaf)"
+New-Item -ItemType Directory -Force $workPath | Out-Null
+$versionFile = "$workPath\version_info.txt"
+Invoke-Checked $py tools\make_version_info.py $Version AutoGuardian.exe "AutoGuardian - Giam sat giao thong" $versionFile
 Invoke-Checked $py -m PyInstaller app.py `
     --name AutoGuardian `
-    --distpath $distRoot --workpath "build\$(Split-Path $distRoot -Leaf)" `
+    --distpath $distRoot --workpath $workPath `
+    --version-file $versionFile `
     --noconfirm --clean --windowed --onedir `
     --collect-all ultralytics `
     --hidden-import lap --copy-metadata lap `
