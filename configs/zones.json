@@ -1,0 +1,120 @@
+{
+  "counting_line": {
+    "enabled": true,
+    "p1": [
+      319,
+      375
+    ],
+    "p2": [
+      1024,
+      344
+    ],
+    "name": "Line 1"
+  },
+  "parking_roi": {
+    "enabled": true,
+    "points": [
+      [
+        10,
+        2
+      ],
+      [
+        505,
+        141
+      ],
+      [
+        9,
+        510
+      ],
+      [
+        17,
+        13
+      ]
+    ],
+    "name": "No Parking Zone A",
+    "threshold_seconds": 30.0
+  },
+  "speed_traps": {
+    "enabled": true,
+    "lane_in": {
+      "name": "Làn Vào (IN)",
+      "enabled": true,
+      "distance_meters": 100.0,
+      "line_a": {
+        "p1": [
+          539,
+          143
+        ],
+        "p2": [
+          780,
+          147
+        ],
+        "name": "Mốc A (Vào)"
+      },
+      "line_b": {
+        "p1": [
+          246,
+          691
+        ],
+        "p2": [
+          1270,
+          638
+        ],
+        "name": "Mốc B (Vào)"
+      }
+    },
+    "lane_out": {
+      "name": "Làn Ra (OUT)",
+      "enabled": true,
+      "distance_meters": 100.0,
+      "line_a": {
+        "p1": [
+          252,
+          135
+        ],
+        "p2": [
+          410,
+          97
+        ],
+        "name": "Mốc A (Ra)"
+      },
+      "line_b": {
+        "p1": [
+          20,
+          274
+        ],
+        "p2": [
+          127,
+          420
+        ],
+        "name": "Mốc B (Ra)"
+      }
+    }
+  },
+  "speed_trap": {
+    "line_a": {
+      "p1": [
+        539,
+        143
+      ],
+      "p2": [
+        780,
+        147
+      ],
+      "name": "Mốc A (Vào)"
+    },
+    "line_b": {
+      "p1": [
+        246,
+        691
+      ],
+      "p2": [
+        1270,
+        638
+      ],
+      "name": "Mốc B (Vào)"
+    },
+    "distance_meters": 100.0,
+    "enabled": true
+  }
+}

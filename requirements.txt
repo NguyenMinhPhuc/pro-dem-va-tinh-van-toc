@@ -1,0 +1,24 @@
+# AutoGuardian - Dependency Requirements
+# Python 3.10+ / 3.11 recommended
+
+# Computer Vision & Deep Learning
+ultralytics>=8.0.0
+opencv-python>=4.8.0
+numpy>=1.24.0,<2.0.0
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Tracking & Math Helpers
+scipy>=1.10.0
+scikit-learn>=1.2.0
+
+# GUI Framework
+PyQt5>=5.15.9
+
+# Data Processing & Storage Export
+pandas>=2.0.0
+openpyxl>=3.1.0
+
+# Additional Utilities
+pillow>=10.0.0
+

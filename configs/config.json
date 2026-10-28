@@ -1,0 +1,52 @@
+{
+  "system": {
+    "app_name": "AutoGuardian",
+    "version": "1.0.0"
+  },
+  "ai": {
+    "model_path": "models/yolov8n.pt",
+    "input_width": 640,
+    "input_height": 640,
+    "default_confidence": 0.5,
+    "target_classes": [2, 3, 5, 7],
+    "target_class_names": ["car", "motorcycle", "bus", "truck"],
+    "tracker_type": "bytetrack.yaml"
+  },
+  "analytics": {
+    "parking_violation_threshold_seconds": 30.0,
+    "parking_displacement_tolerance_pixels": 20.0,
+    "min_track_history": 10
+  },
+  "speed_estimation": {
+    "enabled": true,
+    "pixels_per_meter": 22.0,
+    "min_frames_history": 4
+  },
+  "plate_recognition": {
+    "enabled": true,
+    "min_bbox_width": 90,
+    "save_plate_crop": true
+  },
+  "streaming": {
+    "queue_max_size": 3,
+    "rtsp_retry_interval_seconds": 5.0,
+    "default_camera_index": 0,
+    "loop_video": true
+  },
+  "storage": {
+    "db_path": "outputs/autoguardian.db",
+    "captures_dir": "outputs/captures",
+    "reports_dir": "outputs/reports",
+    "recordings_dir": "outputs/recordings"
+  },
+  "ui": {
+    "show_bbox": true,
+    "show_track_id": true,
+    "show_fps": true,
+    "show_counting_line": true,
+    "show_parking_roi": true,
+    "sound_alert_enabled": true,
+    "popup_alert_enabled": true
+  }
+}
+
